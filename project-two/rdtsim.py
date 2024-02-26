@@ -105,22 +105,50 @@ class EntityA:
     # may use."  The seqnums and acknums in all layer3 Pkts must be between
     # zero and seqnum_limit-1, inclusive.  E.g., if seqnum_limit is 16, then
     # all seqnums must be in the range 0-15.
+
+    # For stop-and wait, only squence numbers 0/1 are allowed.
     def __init__(self, seqnum_limit):
-        pass
+        self.seqnum_limit    = 2
+        self.current_seq_num = 1
+        self.current_packet  = Pkt
 
     # Called from layer 5, passed the data to be sent to other side.
     # The argument `message` is a Msg containing the data to be sent.
+
+    # Pertains to Wait for call 0/1 from above 
+    # Condition: Recieve a message from higher level
+    # Action: Send packet with appropriate seq. num, data and checksum. Start a timer.
     def output(self, message):
-        pass
+        # Surely this can be done in one line in python?
+        if (self.current_seq_num == 1):
+            self.current_seq_num = 0 
+        else: 
+            self.current_seq_num = 1
+
+        self.checksum = self.current_seq_num + self.current_seq_num + int.from_bytes(message.data, "big") # Calculate simple checksum
+        self.current_packet = Pkt(self.current_seq_num, self.current_seq_num, self.checksum , message)
+        to_layer3(self, self.current_packet)
+
+        start_timer(self, 1000)
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityA.
     # The argument `packet` is a Pkt containing the newly arrived packet.
+    
+    # State: Wait for Ack 0/1
+    # If (recieved packet, is corrupt || wrong ack -> Just hold)
+    # If (timeout -> resend previous packet and restart timer) THIS IS HANDLED IN TIMER_INTERRUPT
+    # If (recieved packet, not corrupt, and correct ack -> Stop timer)
     def input(self, packet):
-        pass
+        if (packet.seqnum == self.current_seq_num and packet.checksum == self.current_packet.checksum):
+            stop_timer(self)
+      # else (just do nothing)
 
     # Called when A's timer goes off.
+
+    # Simply resend the previously sent packet (with the same paremeters) and reset timer
     def timer_interrupt(self):
-        pass
+        to_layer3(self, self.current_packet)
+        start_timer(self, 1000)
 
 class EntityB:
     # The following method will be called once (only) before any other
@@ -128,14 +156,35 @@ class EntityB:
     #
     # See comment above `EntityA.__init__` for the meaning of seqnum_limit.
     def __init__(self, seqnum_limit):
-        pass
+        self.seqnum_limit    = 2
+        self.current_seq_num = 0
+        self.current_packet  = Pkt
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityB.
     # The argument `packet` is a Pkt containing the newly arrived packet.
+        
+    # State: Wait for 0/1 from below
+    # Action 1: If (not corrupt and correct seq) -> extract data, deliver data and send ack w/ seq num
+    #          then update seq num
+    # Action 2: If (corrupt or incorrect seq) -> send ack w/ opposite seq num       
     def input(self, packet):
-        pass
+        self.checksum = (self.packet.seqnum   +
+                         self.packet.acknum   + 
+                         self.packet.checksum +
+                         int.from_bytes(self.packet.payload.data, "big"))
+        if (packet.seqnum == self.current_seq_num and packet.checksum == self.checksum):
+            # do something
+            to_layer5(self, packet.payload)
+            self.current_packet = Pkt(self.current_seq_num, self.current_seq_num, self.checksum, 0)
+            to_layer3(self, self.current_packet)
+        else:
+            # not sure yet 
+            print("hi")
 
+    
     # Called when B's timer goes off.
+
+    # A timer isn't used for the reciever when implementing RDT 3.0
     def timer_interrupt(self):
         pass
 
