@@ -41,6 +41,7 @@ from enum import Enum, auto
 import random
 import sys
 import time
+import pudb
 
 ###############################################################################
 
@@ -98,6 +99,10 @@ class Pkt:
 ## ****************************************************************************
 
 class EntityA:
+    cur_seq_num  = 1 
+    cur_packet   = Pkt(0, 0, 0, 0)
+    cur_checksum = 0 
+
     # The following method will be called once (only) before any other
     # EntityA methods are called.  You can use it to do any initialization.
     #
@@ -108,9 +113,10 @@ class EntityA:
 
     # For stop-and wait, only squence numbers 0/1 are allowed.
     def __init__(self, seqnum_limit):
-        self.seqnum_limit    = 2
-        self.current_seq_num = 1
-        self.current_packet  = Pkt
+        self.seqnum_limit = 2
+        self.cur_seq_num  = 1
+        self.cur_packet   = Pkt(0, 0, 0, 0)
+        self.cur_checksum = 0
 
     # Called from layer 5, passed the data to be sent to other side.
     # The argument `message` is a Msg containing the data to be sent.
@@ -120,16 +126,29 @@ class EntityA:
     # Action: Send packet with appropriate seq. num, data and checksum. Start a timer.
     def output(self, message):
         # Surely this can be done in one line in python?
-        if (self.current_seq_num == 1):
-            self.current_seq_num = 0 
-        else: 
-            self.current_seq_num = 1
+        self.cur_seq_num = 1 - self.cur_seq_num
 
-        self.checksum = self.current_seq_num + self.current_seq_num + int.from_bytes(message.data, "big") # Calculate simple checksum
-        self.current_packet = Pkt(self.current_seq_num, self.current_seq_num, self.checksum , message)
-        to_layer3(self, self.current_packet)
+        self.cur_checksum = (self.cur_seq_num +
+                             self.cur_seq_num +
+                             int.from_bytes(message.data, "little")) 
 
-        start_timer(self, 1000)
+        self.cur_packet = Pkt(self.cur_seq_num,
+                              self.cur_seq_num,
+                              self.cur_checksum,
+                              message.data)
+
+        s = '''\
+            \nA: Sending out packet:
+            cur_seq_num        = {0.cur_seq_num} 
+            cur_packet.payload = {0.cur_packet.payload}
+            cur_checksum       = {0.cur_checksum}
+            \n'''.format(self)
+
+        print(s)
+
+        to_layer3(self, self.cur_packet)
+
+        start_timer(self, 30)
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityA.
     # The argument `packet` is a Pkt containing the newly arrived packet.
@@ -139,26 +158,35 @@ class EntityA:
     # If (timeout -> resend previous packet and restart timer) THIS IS HANDLED IN TIMER_INTERRUPT
     # If (recieved packet, not corrupt, and correct ack -> Stop timer)
     def input(self, packet):
-        if (packet.seqnum == self.current_seq_num and packet.checksum == self.current_packet.checksum):
+        if ((packet.seqnum == self.cur_seq_num) and 
+            (packet.checksum == self.cur_packet.checksum)):
+            print("A: Recieved correct packet (from B), stopping timer")
             stop_timer(self)
-      # else (just do nothing)
+
+        else: # (just do nothing)
+            print("A: Recieved incorrect packet (from B), do nothing") 
 
     # Called when A's timer goes off.
 
     # Simply resend the previously sent packet (with the same paremeters) and reset timer
     def timer_interrupt(self):
-        to_layer3(self, self.current_packet)
-        start_timer(self, 1000)
+        print("A: Timer interrupt, resending packet (to B) and restarting timer") 
+        to_layer3(self, self.cur_packet)
+        start_timer(self, 30)
 
 class EntityB:
+    cur_seq_num    = 1 
+    cur_packet     = Pkt(0, 0, 0, 0)
+    cur_checksum   = 0 
+    packet_message = 0
     # The following method will be called once (only) before any other
     # EntityB methods are called.  You can use it to do any initialization.
     #
     # See comment above `EntityA.__init__` for the meaning of seqnum_limit.
     def __init__(self, seqnum_limit):
-        self.seqnum_limit    = 2
-        self.current_seq_num = 0
-        self.current_packet  = Pkt
+        self.seqnum_limit = 2
+        self.cur_seq_num  = 1 
+        self.cur_packet   = Pkt(0, 0, 0, 0)
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityB.
     # The argument `packet` is a Pkt containing the newly arrived packet.
@@ -168,20 +196,49 @@ class EntityB:
     #          then update seq num
     # Action 2: If (corrupt or incorrect seq) -> send ack w/ opposite seq num       
     def input(self, packet):
-        self.checksum = (self.packet.seqnum   +
-                         self.packet.acknum   + 
-                         self.packet.checksum +
-                         int.from_bytes(self.packet.payload.data, "big"))
-        if (packet.seqnum == self.current_seq_num and packet.checksum == self.checksum):
-            # do something
-            to_layer5(self, packet.payload)
-            self.current_packet = Pkt(self.current_seq_num, self.current_seq_num, self.checksum, 0)
-            to_layer3(self, self.current_packet)
-        else:
-            # not sure yet 
-            print("hi")
+        self.cur_seq_num  = 1 - self.cur_seq_num
+        self.cur_checksum = (packet.seqnum   +
+                             packet.acknum   + 
+                             int.from_bytes(packet.payload))
 
-    
+        self.cur_packet = Pkt(self.cur_seq_num,
+                              self.cur_seq_num, 
+                              self.cur_checksum, 
+                              packet.payload)
+
+        # Not corrupt and has correct sequence number
+        if ((packet.seqnum == self.cur_seq_num) and (packet.checksum == self.cur_checksum)):
+            s = '''\
+                \nB: Recieved correct packet from (A):
+                cur_seq_num        = {0.cur_seq_num} 
+                cur_packet.payload = {0.cur_packet.payload}
+                cur_checksum       = {0.cur_checksum}
+                Sending content layer to 5 and ack back to A
+                \n'''.format(self)
+            print(s)
+            # do something
+            self.packet_message = Msg(packet.payload) 
+            to_layer5(self, self.packet_message)
+
+            # self.cur_packet = Pkt(self.cur_seq_num, self.cur_seq_num, self.cur_checksum, packet.payload)
+            to_layer3(self, self.cur_packet)
+        # Is corrupt (either wrong checksum or sequence number)
+        else:
+            print("B: Got the wrong packet (from A), sending ACK back to A")
+            if (self.cur_packet == 1):
+                self.cur_packet = Pkt(0,
+                                      0, 
+                                      self.cur_checksum, 
+                                      packet.payload)
+                to_layer3(self, self.cur_packet)
+            else:
+                self.cur_packet = Pkt(1,
+                                      1, 
+                                      self.cur_checksum, 
+                                      packet.payload)
+                to_layer3(self, self.cur_packet)
+
+
     # Called when B's timer goes off.
 
     # A timer isn't used for the reciever when implementing RDT 3.0
